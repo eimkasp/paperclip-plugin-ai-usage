@@ -1,0 +1,35 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { parseClaudeLog, parseCodexLog, summarise } from "../src/lib/usage.ts";
+
+const now = Date.parse("2026-09-29T12:00:00Z");
+const cli = { installed: true, version: "x" };
+
+test("claude: sums usage, dedupes by message+request id, skips synthetic", () => {
+  const row = (id: string, model = "claude-sonnet-5-5") => JSON.stringify({ type: "assistant", timestamp: "2026-09-29T11:00:00Z", requestId: "r" + id, message: { id, model, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 1 } } });
+  const text = [row("a"), row("a"), row("b", "<synthetic>"), "not json", JSON.stringify({ type: "user" })].join("\n");
+  const ev = parseClaudeLog(text);
+  assert.equal(ev.length, 1);
+  const s = summarise("claude", ev, now, 7, cli);
+  assert.equal(s.last5h.total, 116);
+  assert.equal(s.models[0].model, "claude-sonnet-5-5");
+});
+
+test("codex: per-turn usage, cached split out, latest rate limits", () => {
+  const text = [
+    JSON.stringify({ timestamp: "2026-09-29T10:00:00Z", type: "turn_context", payload: { model: "gpt-5-codex" } }),
+    JSON.stringify({ timestamp: "2026-09-29T10:01:00Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 20 } }, rate_limits: { primary: { used_percent: 12.5, window_minutes: 300, resets_at: 1790000000 }, secondary: { used_percent: 30, window_minutes: 10080, resets_at: null } } } }),
+  ].join("\n");
+  const r = parseCodexLog(text);
+  assert.equal(r.events.length, 1);
+  assert.deepEqual([r.events[0].input, r.events[0].cacheRead, r.events[0].output], [60, 40, 20]);
+  assert.equal(r.limits?.limits[0].label, "5h window");
+  assert.equal(r.limits?.limits[1].label, "7d window");
+  assert.equal(summarise("codex", r.events, now, 7, cli, r.limits!.limits).today.total, 120);
+});
+
+test("summarise: empty input reports no data with full day series", () => {
+  const s = summarise("codex", [], now, 14, { installed: false, version: null });
+  assert.equal(s.dataFound, false);
+  assert.equal(s.days.length, 14);
+});

@@ -1,0 +1,24 @@
+{
+  "name": "paperclip-plugin-ai-usage",
+  "version": "0.1.0",
+  "description": "Paperclip plugin that shows Codex CLI and Claude Code usage (tokens, models, rate limits) read from the local CLIs' own session data.",
+  "license": "MIT",
+  "author": "eimkasp",
+  "type": "module",
+  "keywords": ["paperclip", "paperclip-plugin", "codex", "claude-code", "usage"],
+  "homepage": "https://github.com/eimkasp/paperclip-plugin-ai-usage",
+  "repository": {"type":"git","url":"git+https://github.com/eimkasp/paperclip-plugin-ai-usage.git"},
+  "paperclipPlugin": {"manifest":"dist/manifest.js","worker":"dist/worker.js","ui":"dist/ui"},
+  "engines": {"node": ">=20"},
+  "files": ["dist","README.md","LICENSE"],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "prepublishOnly": "npm run verify"
+  },
+  "dependencies": {"@paperclipai/plugin-sdk": "2026.916.1"},
+  "devDependencies": {"@types/node": "^24", "@types/react": "^19", "react": "^19", "esbuild": "^0.25", "typescript": "^5.7"},
+  "peerDependencies": {"react": ">=18"}
+}
