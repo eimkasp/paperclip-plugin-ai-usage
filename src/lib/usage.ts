@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readdir, readFile, readlink, stat } from "node:fs/promises";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
 export type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
@@ -21,9 +21,13 @@ export type Status = "ok" | "watch" | "high" | "unknown";
 export type Weekly = {
   percent: number | null;
   status: Status;
-  basis: "codex-limit" | "budget" | null;
+  basis: "codex-limit" | "claude-cli" | "budget" | null;
   tokens: number;
   resetsAt: string | null;
+  /** Human reset time as printed by the CLI, when it is not machine-readable. */
+  resetsText?: string | null;
+  /** Extra limit lines such as the current 5-hour session or a per-model week. */
+  extras?: { label: string; percent: number; resetsText: string | null }[];
   note: string;
 };
 export type AgentRef = { name: string; status: string };
@@ -226,11 +230,55 @@ export function codexWeekly(u: ToolUsage, now: number): Weekly {
   return { percent, status: statusFor(percent), basis: "codex-limit", tokens, resetsAt: w.resetsAt, note: "Reported by Codex at its last run." };
 }
 
-/** Claude Code logs carry no plan limit, so the percentage is measured against a budget the operator sets. Cache reads are excluded. */
-export function claudeWeekly(u: ToolUsage, budget: number | null): Weekly {
+export type ClaudeLimits = { label: string; percent: number; resetsText: string | null }[];
+
+/** Parses the plan-limit lines printed by `claude -p "/usage"`, e.g. "Current week (all models): 96% used · resets Oct 3 at 5pm (Europe/Vilnius)". */
+export function parseClaudeUsage(text: string): ClaudeLimits {
+  const out: ClaudeLimits = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\s*(Current [^:]+):\s*(\d+(?:\.\d+)?)%\s*used(?:\s*[·•-]\s*resets\s+(.+?))?\s*$/i);
+    if (m) out.push({ label: m[1].trim(), percent: Number(m[2]), resetsText: m[3]?.trim() ?? null });
+  }
+  return out;
+}
+
+/** Runs the Claude Code CLI's own usage report. It reads the local login itself; this plugin never sees credentials. */
+/** The host may run workers with TZ=UTC. Use the machine's own zone so reset times read in local time. */
+async function machineTimeZone(): Promise<string | undefined> {
+  try {
+    const link = await readlink("/etc/localtime");
+    const i = link.indexOf("zoneinfo/");
+    return i >= 0 ? link.slice(i + "zoneinfo/".length) : undefined;
+  } catch { return undefined; }
+}
+
+export async function claudeCliUsage(bin = "claude", timeoutMs = 45_000): Promise<ClaudeLimits | null> {
+  const tz = await machineTimeZone();
+  return new Promise((resolve) => {
+    // The plugin worker starts with a minimal environment. Claude Code needs HOME and USER to find the login it already has.
+    let user = process.env.USER;
+    try { user ||= userInfo().username; } catch { /* no passwd entry */ }
+    const env = { ...process.env, HOME: process.env.HOME || homedir(), USER: user, LOGNAME: process.env.LOGNAME || user, NO_COLOR: "1", ...(tz ? { TZ: tz } : {}) };
+    const child = execFile(bin, ["-p", "/usage"], { timeout: timeoutMs, maxBuffer: 1 << 20, env }, (err, stdout) => {
+      if (err) return resolve(null);
+      const limits = parseClaudeUsage(String(stdout));
+      resolve(limits.length ? limits : null);
+    });
+    child.stdin?.end();
+  });
+}
+
+/** Prefers the plan limit reported by the CLI. Falls back to a token budget the operator sets, then to "no data". Cache reads are excluded from the budget maths. */
+export function claudeWeekly(u: ToolUsage, budget: number | null, cli: ClaudeLimits | null = null): Weekly {
   const t = u.last7d;
   const tokens = t.input + t.output + t.cacheWrite;
-  if (!budget || budget <= 0) return { percent: null, status: "unknown", basis: null, tokens, resetsAt: null, note: "Set a weekly token budget in the plugin settings to see a percentage." };
+  const week = cli?.find((l) => /week/i.test(l.label) && /all models/i.test(l.label)) ?? cli?.find((l) => /week/i.test(l.label));
+  if (week) {
+    const percent = Math.min(100, week.percent);
+    const extras = cli!.filter((l) => l !== week);
+    return { percent, status: statusFor(percent), basis: "claude-cli", tokens, resetsAt: null, resetsText: week.resetsText, extras, note: "Plan limit reported by Claude Code (/usage)." };
+  }
+  if (!budget || budget <= 0) return { percent: null, status: "unknown", basis: null, tokens, resetsAt: null, note: "Claude Code did not report a plan limit. Set a weekly token budget in the plugin settings to see a percentage." };
   const percent = Math.min(999, (tokens / budget) * 100);
   return { percent, status: statusFor(percent), basis: "budget", tokens, resetsAt: null, note: `Rolling 7 days against your ${budget.toLocaleString("en-US")} token budget.` };
 }
@@ -243,8 +291,8 @@ export function overallWeekly(a: Weekly, b: Weekly): Weekly {
   return { ...top, tokens: a.tokens + b.tokens, note: known.length === 2 ? "Highest of Codex and Claude Code." : top.note };
 }
 
-export function decorate(snap: UsageSnapshot, opts: { claudeBudget: number | null; agents: { codex: AgentRef[]; claude: AgentRef[] } }, now = Date.now()): UsageView {
+export function decorate(snap: UsageSnapshot, opts: { claudeBudget: number | null; claudeCli?: ClaudeLimits | null; agents: { codex: AgentRef[]; claude: AgentRef[] } }, now = Date.now()): UsageView {
   const codex = { ...snap.codex, weekly: codexWeekly(snap.codex, now), agents: opts.agents.codex };
-  const claude = { ...snap.claude, weekly: claudeWeekly(snap.claude, opts.claudeBudget), agents: opts.agents.claude };
+  const claude = { ...snap.claude, weekly: claudeWeekly(snap.claude, opts.claudeBudget, opts.claudeCli ?? null), agents: opts.agents.claude };
   return { generatedAt: snap.generatedAt, windowDays: snap.windowDays, codex, claude, overall: overallWeekly(codex.weekly, claude.weekly) };
 }

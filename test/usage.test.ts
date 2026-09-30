@@ -66,3 +66,31 @@ test("overall weekly is the higher of the known percentages", () => {
   assert.equal(overallWeekly(mk(null), mk(40)).percent, 40);
   assert.equal(overallWeekly(mk(null), mk(null)).status, "unknown");
 });
+
+import { parseClaudeUsage } from "../src/lib/usage.ts";
+
+const SAMPLE = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 1% used · resets Sep 30 at 7:40pm (Europe/Vilnius)
+Current week (all models): 96% used · resets Oct 3 at 5pm (Europe/Vilnius)
+Current week (Fable): 0% used · resets Oct 3 at 5pm (Europe/Vilnius)
+
+Last 7d · 38494 requests · 44 sessions
+  83% of your usage came from subagent-heavy sessions`;
+
+test("claude /usage: parses plan limit lines and ignores the rest", () => {
+  const l = parseClaudeUsage(SAMPLE);
+  assert.equal(l.length, 3);
+  assert.deepEqual(l[1], { label: "Current week (all models)", percent: 96, resetsText: "Oct 3 at 5pm (Europe/Vilnius)" });
+  assert.equal(parseClaudeUsage("nothing useful").length, 0);
+});
+
+test("claude weekly prefers the CLI plan limit over a budget, keeps other lines as extras", () => {
+  const u = summarise("claude", [], now, 7, cli);
+  const w = claudeWeekly(u, 100, parseClaudeUsage(SAMPLE));
+  assert.equal(w.percent, 96);
+  assert.equal(w.status, "high");
+  assert.equal(w.basis, "claude-cli");
+  assert.equal(w.extras?.length, 2);
+  assert.equal(claudeWeekly(u, null, null).status, "unknown");
+});

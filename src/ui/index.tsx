@@ -14,6 +14,7 @@ const styles = `
 .au-meter { height: 12px; background: var(--border, #8883); margin: 8px 0; position: relative; overflow: hidden; }
 .au-meter i { display: block; height: 100%; background: var(--au-c); }
 .au-meter::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to right, transparent 59.6%, #8886 59.6%, #8886 60%, transparent 60%, transparent 84.6%, #8886 84.6%, #8886 85%, transparent 85%); }
+.au-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--au-c); }
 .au-agents { margin: 8px 0 0; font-size: .8rem; opacity: .85; }
 .au-legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0 0; font-size: .75rem; opacity: .8; }
 .au-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--au-c); }
@@ -53,6 +54,8 @@ function Stat({ label, t }: { label: string; t: Tokens }) {
 const label: Record<Status, string> = { ok: "OK", watch: "Watch", high: "High", unknown: "No data" };
 const pct = (w: Weekly) => (w.percent === null ? "—" : `${Math.round(w.percent)}%`);
 
+const note = (w: Weekly) => `${w.note}${w.resetsAt ? ` Resets ${reset(w.resetsAt)}.` : w.resetsText ? ` Resets ${w.resetsText}.` : ""}`;
+
 function Meter({ w }: { w: Weekly }) {
   return (
     <div className="au-meter" role="progressbar" aria-label="Weekly usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={w.percent === null ? undefined : Math.round(Math.min(100, w.percent))}>
@@ -68,7 +71,7 @@ function Overall({ w }: { w: Weekly }) {
       <div>
         <div><b>Weekly usage, overall</b> <span className="au-pill">{label[w.status]}</span></div>
         <Meter w={w} />
-        <div className="au-note">{w.note}{w.resetsAt ? ` Resets ${reset(w.resetsAt)}.` : ""}</div>
+        <div className="au-note">{note(w)}</div>
         <div className="au-legend"><span data-status="ok">Under 60%</span><span data-status="watch">60–84%</span><span data-status="high">85% and over</span></div>
       </div>
     </section>
@@ -85,7 +88,8 @@ function ToolCard({ u, compact }: { u: ToolView; compact?: boolean }) {
       <div className="au-weekly" data-status={w.status}>
         <div className="au-weekly-top"><span>Weekly usage <span className="au-pill">{label[w.status]}</span></span><span className="au-weekly-pct">{pct(w)}</span></div>
         <Meter w={w} />
-        <div className="au-note">{w.note}{w.resetsAt ? ` Resets ${reset(w.resetsAt)}.` : ""}</div>
+        <div className="au-note">{note(w)}</div>
+        {w.extras?.map((x) => <div key={x.label} className="au-note" data-status={x.percent >= 85 ? "high" : x.percent >= 60 ? "watch" : "ok"}><span className="au-dot" />{x.label.replace("Current ", "")}: {Math.round(x.percent)}%{x.resetsText ? `, resets ${x.resetsText}` : ""}</div>)}
       </div>
       <p className="au-agents">{u.agents.length ? `Used by ${u.agents.length} agent${u.agents.length === 1 ? "" : "s"} here: ${u.agents.map((a) => a.name).join(", ")}` : "No Paperclip agents in this company use this CLI."}</p>
       {!u.dataFound ? (
