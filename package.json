@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-ai-usage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Paperclip plugin that shows Codex CLI and Claude Code usage (tokens, models, rate limits) read from the local CLIs' own session data.",
   "license": "MIT",
   "author": "eimkasp",

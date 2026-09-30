@@ -33,3 +33,36 @@ test("summarise: empty input reports no data with full day series", () => {
   assert.equal(s.dataFound, false);
   assert.equal(s.days.length, 14);
 });
+
+import { statusFor, codexWeekly, claudeWeekly, overallWeekly } from "../src/lib/usage.ts";
+
+test("status thresholds: green under 60, yellow 60-84, red 85+", () => {
+  assert.deepEqual([0, 59.9, 60, 84.9, 85, 100].map(statusFor), ["ok", "ok", "watch", "watch", "high", "high"]);
+  assert.equal(statusFor(null), "unknown");
+});
+
+test("codex weekly: uses the 7-day window, resets to 0 once the window has passed", () => {
+  const limits = [{ label: "7d window", usedPercent: 72, windowMinutes: 10080, resetsAt: "2026-10-03T20:00:00.000Z" }];
+  const u = summarise("codex", [], now, 7, cli, limits);
+  assert.equal(codexWeekly(u, now).percent, 72);
+  assert.equal(codexWeekly(u, now).status, "watch");
+  assert.equal(codexWeekly(u, Date.parse("2026-10-05T00:00:00Z")).percent, 0);
+  assert.equal(codexWeekly(summarise("codex", [], now, 7, cli, []), now).status, "unknown");
+});
+
+test("claude weekly: percent of budget, excludes cache reads, unknown without a budget", () => {
+  const ev = [{ ts: now - 3600_000, model: "m", input: 100, output: 50, cacheRead: 10_000, cacheWrite: 50 }];
+  const u = summarise("claude", ev, now, 7, cli);
+  assert.equal(claudeWeekly(u, null).percent, null);
+  const w = claudeWeekly(u, 400);
+  assert.equal(w.tokens, 200);
+  assert.equal(w.percent, 50);
+  assert.equal(w.status, "ok");
+});
+
+test("overall weekly is the higher of the known percentages", () => {
+  const mk = (percent: number | null) => ({ percent, status: statusFor(percent), basis: null, tokens: 1, resetsAt: null, note: "" }) as const;
+  assert.equal(overallWeekly(mk(30), mk(90)).status, "high");
+  assert.equal(overallWeekly(mk(null), mk(40)).percent, 40);
+  assert.equal(overallWeekly(mk(null), mk(null)).status, "unknown");
+});

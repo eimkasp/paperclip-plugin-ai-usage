@@ -17,7 +17,19 @@ export type ToolUsage = {
   limits: RateLimit[];
   lastActivity: string | null;
 };
+export type Status = "ok" | "watch" | "high" | "unknown";
+export type Weekly = {
+  percent: number | null;
+  status: Status;
+  basis: "codex-limit" | "budget" | null;
+  tokens: number;
+  resetsAt: string | null;
+  note: string;
+};
+export type AgentRef = { name: string; status: string };
+export type ToolView = ToolUsage & { weekly: Weekly; agents: AgentRef[] };
 export type UsageSnapshot = { generatedAt: string; windowDays: number; codex: ToolUsage; claude: ToolUsage };
+export type UsageView = { generatedAt: string; windowDays: number; codex: ToolView; claude: ToolView; overall: Weekly };
 export type UsageEvent = { ts: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number };
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -35,19 +47,27 @@ function* jsonLines(text: string): Generator<any> {
   }
 }
 
-/** Claude Code: assistant messages carry message.usage. Deduped by message id + request id. */
-export function parseClaudeLog(text: string, seen = new Set<string>()): UsageEvent[] {
-  const out: UsageEvent[] = [];
+/** Claude Code: assistant messages carry message.usage. Each event keeps its message+request id so callers can dedupe across files. */
+export function parseClaudeKeyed(text: string): { key: string; event: UsageEvent }[] {
+  const out: { key: string; event: UsageEvent }[] = [];
   for (const row of jsonLines(text)) {
     const u = row?.message?.usage;
     if (row?.type !== "assistant" || !u) continue;
     const ts = Date.parse(row.timestamp);
     if (!Number.isFinite(ts)) continue;
-    const key = `${row.message.id ?? ""}:${row.requestId ?? ""}`;
-    if (key !== ":") { if (seen.has(key)) continue; seen.add(key); }
     const model = String(row.message.model ?? "unknown");
     if (model === "<synthetic>") continue;
-    out.push({ ts, model, input: num(u.input_tokens), output: num(u.output_tokens), cacheRead: num(u.cache_read_input_tokens), cacheWrite: num(u.cache_creation_input_tokens) });
+    const key = `${row.message.id ?? ""}:${row.requestId ?? ""}`;
+    out.push({ key, event: { ts, model, input: num(u.input_tokens), output: num(u.output_tokens), cacheRead: num(u.cache_read_input_tokens), cacheWrite: num(u.cache_creation_input_tokens) } });
+  }
+  return out;
+}
+
+export function parseClaudeLog(text: string, seen = new Set<string>()): UsageEvent[] {
+  const out: UsageEvent[] = [];
+  for (const { key, event } of parseClaudeKeyed(text)) {
+    if (key !== ":") { if (seen.has(key)) continue; seen.add(key); }
+    out.push(event);
   }
   return out;
 }
@@ -141,6 +161,20 @@ export const defaultPaths = (): Paths => ({
   claudeHome: process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
 });
 
+type FileCache<T> = Map<string, { mtimeMs: number; size: number; value: T }>;
+const claudeCache: FileCache<{ key: string; event: UsageEvent }[]> = new Map();
+const codexCache: FileCache<ReturnType<typeof parseCodexLog>> = new Map();
+
+/** Session logs are append-only, so an unchanged file (same size and mtime) is never parsed twice. */
+async function cached<T>(cache: FileCache<T>, file: string, parse: (text: string) => T): Promise<T> {
+  const st = await stat(file);
+  const hit = cache.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.value;
+  const value = parse(await readFile(file, "utf8"));
+  cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, value });
+  return value;
+}
+
 export async function collect(paths: Paths = defaultPaths(), windowDays = 14, now = Date.now()): Promise<UsageSnapshot> {
   const since = now - windowDays * 86400_000;
   const [codexCli, claudeCli] = await Promise.all([cliVersion("codex"), cliVersion("claude")]);
@@ -148,14 +182,20 @@ export async function collect(paths: Paths = defaultPaths(), windowDays = 14, no
   const claudeEvents: UsageEvent[] = [];
   const seen = new Set<string>();
   for await (const f of walk(join(paths.claudeHome, "projects"), since)) {
-    try { claudeEvents.push(...parseClaudeLog(await readFile(f, "utf8"), seen)); } catch { /* unreadable */ }
+    try {
+      for (const { key, event } of await cached(claudeCache, f, parseClaudeKeyed)) {
+        if (event.ts < since) continue;
+        if (key !== ":") { if (seen.has(key)) continue; seen.add(key); }
+        claudeEvents.push(event);
+      }
+    } catch { /* unreadable */ }
   }
 
   const codexEvents: UsageEvent[] = [];
   let latest: { ts: number; limits: RateLimit[] } | null = null;
   for await (const f of walk(join(paths.codexHome, "sessions"), since)) {
     try {
-      const r = parseCodexLog(await readFile(f, "utf8"));
+      const r = await cached(codexCache, f, parseCodexLog);
       codexEvents.push(...r.events);
       if (r.limits && (!latest || r.limits.ts > latest.ts)) latest = r.limits;
     } catch { /* unreadable */ }
@@ -166,4 +206,45 @@ export async function collect(paths: Paths = defaultPaths(), windowDays = 14, no
     codex: summarise("codex", codexEvents.filter((e) => e.ts >= since), now, windowDays, codexCli, latest?.limits ?? []),
     claude: summarise("claude", claudeEvents.filter((e) => e.ts >= since), now, windowDays, claudeCli),
   };
+}
+
+/** Green under 60%, yellow from 60%, red from 85%. Colour is never the only signal: the UI also prints the word. */
+export function statusFor(percent: number | null): Status {
+  if (percent === null) return "unknown";
+  return percent >= 85 ? "high" : percent >= 60 ? "watch" : "ok";
+}
+
+const WEEK_MINUTES = 7 * 24 * 60;
+
+/** Codex reports its own weekly window. Once that window has reset, the last reading no longer applies. */
+export function codexWeekly(u: ToolUsage, now: number): Weekly {
+  const w = u.limits.find((l) => (l.windowMinutes ?? 0) >= WEEK_MINUTES - 60);
+  const tokens = u.last7d.total;
+  if (!w) return { percent: null, status: "unknown", basis: null, tokens, resetsAt: null, note: u.dataFound ? "Codex has not reported a weekly limit yet." : "No Codex usage found." };
+  if (w.resetsAt && Date.parse(w.resetsAt) < now) return { percent: 0, status: "ok", basis: "codex-limit", tokens, resetsAt: null, note: "Weekly window has reset since the last Codex run." };
+  const percent = Math.min(100, Math.max(0, w.usedPercent));
+  return { percent, status: statusFor(percent), basis: "codex-limit", tokens, resetsAt: w.resetsAt, note: "Reported by Codex at its last run." };
+}
+
+/** Claude Code logs carry no plan limit, so the percentage is measured against a budget the operator sets. Cache reads are excluded. */
+export function claudeWeekly(u: ToolUsage, budget: number | null): Weekly {
+  const t = u.last7d;
+  const tokens = t.input + t.output + t.cacheWrite;
+  if (!budget || budget <= 0) return { percent: null, status: "unknown", basis: null, tokens, resetsAt: null, note: "Set a weekly token budget in the plugin settings to see a percentage." };
+  const percent = Math.min(999, (tokens / budget) * 100);
+  return { percent, status: statusFor(percent), basis: "budget", tokens, resetsAt: null, note: `Rolling 7 days against your ${budget.toLocaleString("en-US")} token budget.` };
+}
+
+/** The tighter of the two limits is what will stop work first. */
+export function overallWeekly(a: Weekly, b: Weekly): Weekly {
+  const known = [a, b].filter((w) => w.percent !== null);
+  if (!known.length) return { percent: null, status: "unknown", basis: null, tokens: a.tokens + b.tokens, resetsAt: null, note: "No weekly percentage available yet." };
+  const top = known.reduce((x, y) => ((y.percent ?? 0) > (x.percent ?? 0) ? y : x));
+  return { ...top, tokens: a.tokens + b.tokens, note: known.length === 2 ? "Highest of Codex and Claude Code." : top.note };
+}
+
+export function decorate(snap: UsageSnapshot, opts: { claudeBudget: number | null; agents: { codex: AgentRef[]; claude: AgentRef[] } }, now = Date.now()): UsageView {
+  const codex = { ...snap.codex, weekly: codexWeekly(snap.codex, now), agents: opts.agents.codex };
+  const claude = { ...snap.claude, weekly: claudeWeekly(snap.claude, opts.claudeBudget), agents: opts.agents.claude };
+  return { generatedAt: snap.generatedAt, windowDays: snap.windowDays, codex, claude, overall: overallWeekly(codex.weekly, claude.weekly) };
 }
