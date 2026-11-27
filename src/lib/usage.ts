@@ -30,9 +30,11 @@ export type Weekly = {
   extras?: { label: string; percent: number; resetsText: string | null }[];
   note: string;
 };
-export type AgentRef = { name: string; status: string };
+export type AgentRef = { name: string; status: string; urlKey?: string | null };
 export type ToolView = ToolUsage & { weekly: Weekly; agents: AgentRef[] };
 export type UsageSnapshot = { generatedAt: string; windowDays: number; codex: ToolUsage; claude: ToolUsage };
+/** Returned while the first read after a restart is still parsing logs. */
+export type Warming = { warming: true; since: string };
 export type UsageView = { generatedAt: string; windowDays: number; codex: ToolView; claude: ToolView; overall: Weekly };
 export type UsageEvent = { ts: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number };
 

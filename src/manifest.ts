@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "eimkasp.ai-usage",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.3.0",
   displayName: "AI CLI Usage",
   description: "Shows Codex CLI and Claude Code weekly usage (percent, tokens, models, rate-limit windows) with green, yellow and red status, read locally from the CLIs' own session data. Read-only; nothing leaves the machine.",
   author: "eimkasp",

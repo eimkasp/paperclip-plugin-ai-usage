@@ -2,7 +2,22 @@
 
 Paperclip plugin that shows **Codex CLI** and **Claude Code** usage inside Paperclip: **weekly usage as a percentage** with green/yellow/red status, an overall figure, tokens today, in the last 5 hours and over 7 days, a 14-day chart, per-model totals and which Paperclip agents use each CLI. It also reports whether each CLI is installed (`codex --version`, `claude --version`).
 
-Adds a dashboard widget, an **AI Usage** page (`/ai-usage`) and a sidebar link.
+Adds an **AI Usage** page (`/ai-usage`), a compact dashboard widget and a sidebar link that shows the overall weekly figure.
+
+![AI Usage page in Paperclip](docs/screenshots/page-in-paperclip.png)
+
+| Dashboard widget | Sidebar link | Mobile |
+| --- | --- | --- |
+| ![Dashboard widget](docs/screenshots/widget.png) | ![Sidebar link with the weekly figure](docs/screenshots/sidebar.png) | ![Page on mobile](docs/screenshots/mobile.png) |
+
+## What you see
+
+- **Overall:** the tighter of the two weekly limits, which CLI is closest to its limit, and when it resets.
+- **Per CLI:** weekly percentage against the 60% and 85% thresholds, reset time with a countdown, extra limit lines (5-hour session, per-model week), tokens today / last 5h / 7 days, tokens per day for 14 days, model share and the 7-day token mix (input, output, cache).
+- **Stale readings:** Codex percentages come from its last run; when that run is more than a day old the card says so.
+- **Agents:** chips for Paperclip agents in the current company that use each CLI, linking to the agent.
+- **Refresh:** re-reads the logs and the Claude Code report instead of serving the cache.
+- **First load after a restart:** the worker parses every recent session log once, which can take longer than Paperclip's 30-second data limit on busy machines. The page shows a loading state and polls until the data is ready instead of failing.
 
 ## Weekly usage and status
 
