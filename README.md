@@ -44,7 +44,14 @@ Paperclip plugin workers are trusted code with no filesystem sandbox. This plugi
 
 ## Install
 
-From npm, in Paperclip's plugin settings install the package `paperclip-plugin-ai-usage`, or from a checkout:
+Releases are published on GitHub, not on the npm registry. Download `paperclip-plugin-ai-usage-<version>.tgz` from the [latest release](https://github.com/eimkasp/paperclip-plugin-ai-usage/releases/latest), extract it and install the folder:
+
+```bash
+tar -xzf paperclip-plugin-ai-usage-0.3.0.tgz
+paperclipai plugin install "$PWD/package"
+```
+
+Or from a checkout:
 
 ```bash
 npm install && npm run build
